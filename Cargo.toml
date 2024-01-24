@@ -18,6 +18,7 @@ repository = "mindriot101/rust-emcee"
 
 [dependencies]
 rand = "0.4.2"
+scoped_threadpool = "0.1.9"
 
 [dev-dependencies]
 assert_approx_eq = "1.0.0"

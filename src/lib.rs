@@ -320,10 +320,11 @@
 //! [emcee-sample]: struct.EnsembleSampler.html#method.sample
 //! [emcee-step]: struct.Step.html
 
-#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 extern crate rand;
+extern crate scoped_threadpool;
+use scoped_threadpool::Pool;
 
 #[cfg(test)]
 #[macro_use]
@@ -336,6 +337,7 @@ mod stretch;
 mod stores;
 
 use std::rc::Rc;
+use std::sync::mpsc::channel;
 use rand::{Rng, SeedableRng, StdRng};
 use rand::distributions::{IndependentSample, Range};
 
@@ -370,13 +372,14 @@ pub struct Step {
 }
 
 /// Affine-invariant Markov-chain Monte Carlo sampler
-pub struct EnsembleSampler<'a, T: Prob + 'a> {
+pub struct EnsembleSampler<'a, T: Prob + Sync + Send + 'a> {
     nwalkers: usize,
     lnprob: &'a T,
     dim: usize,
     proposal_scale: f64,
+    pool: Option<Pool>,
 
-    rng: Box<Rng>,
+    rng: Box<dyn Rng>,
     naccepted: Vec<usize>,
     iterations: usize,
     chain: Option<Chain>,
@@ -390,7 +393,9 @@ pub struct EnsembleSampler<'a, T: Prob + 'a> {
     pub thin: usize,
 }
 
-impl<'a, T: Prob + 'a> EnsembleSampler<'a, T> {
+impl<'a, T: Prob + Sync + Send + 'a> EnsembleSampler<'a, T>
+    // where for<'b> &'b T: Send
+    {
     /// Create a new `EnsembleSampler`
     ///
     /// Errors are handled by returning a [`Result`](errors/type.Result.html) which contains
@@ -417,6 +422,51 @@ impl<'a, T: Prob + 'a> EnsembleSampler<'a, T> {
             iterations: 0,
             lnprob: lnprob,
             dim: dim,
+            pool: None,
+            naccepted: vec![0; nwalkers],
+            rng: Box::new(rand::thread_rng()),
+            proposal_scale: 2.0,
+            chain: None,
+            probstore: None,
+            storechain: true,
+            thin: 1,
+            initial_state: None,
+        })
+    }
+
+    /// Create a new `EnsembleSampler`
+    ///
+    /// Errors are handled by returning a [`Result`](errors/type.Result.html) which contains
+    /// [`EmceeError::InvalidInputs`](errors/enum.EmceeError.html) error variant for the following
+    /// errors:
+    ///
+    /// * the number of walkers must be even * the number of walkers must be at least twice the
+    /// number of parameters
+    pub fn threaded(nwalkers: usize, dim: usize, lnprob: &'a T, n_threads: usize) -> Result<Self> {
+        if nwalkers % 2 != 0 {
+            return Err(EmceeError::InvalidInputs(
+                "the number of walkers must be even".into(),
+            ));
+        }
+
+        if nwalkers <= 2 * dim {
+            let msg = "the number of walkers should be more than \
+                       twice the dimension of your parameter space";
+            return Err(EmceeError::InvalidInputs(msg.into()));
+        }
+        if n_threads > nwalkers {
+            println!("WARNING: You asked for more threads ({}) than walkers ({}). Is this a mistake?", n_threads, nwalkers);
+        }
+        if nwalkers % n_threads != 0 {
+            println!("WARNING: Your number of threads ({}) does not divide the number of walkers ({}). Is this a mistake?", n_threads, nwalkers);
+        }
+
+        Ok(EnsembleSampler {
+            nwalkers: nwalkers,
+            iterations: 0,
+            lnprob: lnprob,
+            dim: dim,
+            pool: Some(Pool::new(n_threads as u32)),
             naccepted: vec![0; nwalkers],
             rng: Box::new(rand::thread_rng()),
             proposal_scale: 2.0,
@@ -636,23 +686,48 @@ impl<'a, T: Prob + 'a> EnsembleSampler<'a, T> {
         Ok(out)
     }
 
-    fn get_lnprob(&self, p: &[Guess]) -> Result<Vec<f64>> {
+    fn get_lnprob(&mut self, p: &[Guess]) -> Result<Vec<f64>> {
         let mut lnprobs = Vec::with_capacity(p.len());
+        let lnprob = self.lnprob;
         for guess in p {
             if guess.contains_infs() {
                 return Err("At least one parameter value was infinite".into());
             } else if guess.contains_nans() {
                 return Err("At least one parameter value was NaN".into());
             }
-
-            let result = self.lnprob.lnprob(guess);
-            if result.is_nan() {
-                return Err("NaN value of lnprob".into());
-            }
-
-            lnprobs.push(result);
         }
+        match &mut self.pool {
+            Some(pool) => {
+                for _ in 0..p.len() {
+                    lnprobs.push(0.);
+                }
+                let (tx, rx) = channel();
+                pool.scoped(|scoped| {
+                    for (i, guess) in p.iter().enumerate() {
+                        let tx = tx.clone();
+                        scoped.execute(move || {
+                            tx.send((i, lnprob.lnprob(&guess))).expect("Error sending job results to from the thread pool");
+                        });
+                    }
+                });
 
+                for (i, result) in rx.try_iter() {
+                    if result.is_nan() {
+                        return Err("NaN value of lnprob".into());
+                    }
+                    lnprobs[i] = result;
+                }
+            },
+            None => {
+                for guess in p {
+                    let result = self.lnprob.lnprob(guess);
+                    if result.is_nan() {
+                        return Err("NaN value of lnprob".into());
+                    }
+                    lnprobs.push(result);
+                }
+            }
+        }
         Ok(lnprobs)
     }
 }
@@ -846,7 +921,7 @@ mod tests {
         let foo = LinearModel::new(&real_x, &observed_y);
 
         let nwalkers = 8;
-        let sampler = EnsembleSampler::new(nwalkers, 2, &foo).unwrap();
+        let mut sampler = EnsembleSampler::new(nwalkers, 2, &foo).unwrap();
         let lnprob = sampler.get_lnprob(&pos).unwrap();
         let expected: Vec<f64> = vec![-4613.19497084, -4613.277985, -4613.25381092, -4613.1954303];
         for (a, b) in lnprob.iter().zip(expected) {

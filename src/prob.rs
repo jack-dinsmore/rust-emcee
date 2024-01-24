@@ -51,7 +51,7 @@ use guess::Guess;
 ///
 /// The default implementation of
 /// [`lnprob`](trait.Prob.html#method.lnprob) can be seen in the source code.
-pub trait Prob {
+pub trait Prob : Send + Sync {
     /// Computes the natural logarithm of the likelihood of a position in parameter space
     fn lnlike(&self, params: &Guess) -> f64;
 

@@ -38,7 +38,7 @@ impl ::std::error::Error for EmceeError {
         details.as_str()
     }
 
-    fn cause(&self) -> Option<&::std::error::Error> {
+    fn cause(&self) -> Option<&dyn (::std::error::Error)> {
         // We are not wrapping other error types, and our types do not have an
         // underlying cause beyond the description passed via the creation
         None
