@@ -620,6 +620,11 @@ impl<'a, T: Prob + Sync + Send + 'a> EnsembleSampler<'a, T>
         self.chain.as_ref().map(|chain| chain.flatchain())
     }
 
+    /// Return the samples as computed by the sampler
+    pub fn flatprob(&self) -> Option<Vec<f64>> {
+        self.probstore.as_ref().map(|probstore| probstore.flatprob())
+    }
+
     /// Return the number of iterations accepted, one value per walker
     pub fn acceptance_fraction(&self) -> Vec<f64> {
         self.naccepted

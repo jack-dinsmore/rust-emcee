@@ -96,6 +96,20 @@ impl ProbStore {
         self.data[idx] = value;
     }
 
+    pub fn get(&self, walker_idx: usize, iteration_idx: usize) -> f64{
+        assert!(walker_idx < self.nwalkers);
+        assert!(
+            iteration_idx < self.niterations,
+            "iteration index {}, number of iterations required: {}",
+            iteration_idx,
+            self.niterations
+        );
+
+        let idx = self.index(walker_idx, iteration_idx);
+
+        self.data[idx]
+    }
+
     pub fn set_probs(&mut self, iteration_idx: usize, newdata: &[f64]) {
         assert_eq!(newdata.len(), self.nwalkers);
         for (idx, value) in newdata.iter().enumerate() {
@@ -105,6 +119,16 @@ impl ProbStore {
 
     fn index(&self, walker_idx: usize, iteration_idx: usize) -> usize {
         (iteration_idx * self.nwalkers) + walker_idx
+    }
+
+    pub fn flatprob(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.niterations * self.nwalkers);
+        for iter in 0..self.niterations {
+            for walker in 0..self.nwalkers {
+                out.push(self.get(walker, iter));
+            }
+        }
+        out
     }
 }
 
